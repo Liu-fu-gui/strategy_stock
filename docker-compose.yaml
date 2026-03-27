@@ -5,15 +5,11 @@ services:
       dockerfile: Dockerfile.backend
     container_name: strategy_stock_backend
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://stock:stock123456@postgres:5432/app
-      DATABASE_URL_SYNC: postgresql+psycopg2://stock:stock123456@postgres:5432/app
-      REDIS_URL: redis://:redis123456@redis:6379/0
+      TZ: Asia/Shanghai
+      DATABASE_URL: postgresql+asyncpg://stock:stock123456@127.0.0.1:5432/app
+      DATABASE_URL_SYNC: postgresql+psycopg2://stock:stock123456@127.0.0.1:5432/app
+      REDIS_URL: redis://:redis123456@127.0.0.1:6379/0
       XTICK_BASE_URL: http://api.xtick.top
       XTICK_TOKEN: 0d8aa771dd0a0e33624e1546d13c3eb6
     ports:

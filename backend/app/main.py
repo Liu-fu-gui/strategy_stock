@@ -1,9 +1,11 @@
 """策略选股系统 - FastAPI 入口"""
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 
 from app.core.config import settings
 from app.core.database import init_db
@@ -16,7 +18,9 @@ from app.services.xtick_client import xtick_client
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    force=True,
 )
+op_logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -46,6 +50,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def operation_log_middleware(request: Request, call_next):
+    """记录 API 操作日志(不刷 health 日志)。"""
+    start = time.perf_counter()
+    response = await call_next(request)
+    cost_ms = (time.perf_counter() - start) * 1000
+
+    path = request.url.path
+    if path.startswith("/api/") and path != "/health":
+        client_ip = request.client.host if request.client else "-"
+        op_logger.info(
+            f'{request.method} {path} status={response.status_code} '
+            f'cost_ms={cost_ms:.1f} ip={client_ip}'
+        )
+    return response
 
 # 注册路由
 app.include_router(data.router, prefix="/api")
