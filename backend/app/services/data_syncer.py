@@ -1,20 +1,29 @@
 """数据同步服务 - 从 xtick 拉取数据写入数据库"""
 import asyncio
-import json
 import logging
 from datetime import date, datetime, timedelta
-from decimal import Decimal
 
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session
-from app.core.redis import redis_client
 from app.models.stock import Stock, DailyKline, AuctionData
 from app.services.xtick_client import xtick_client, XtickApiError
+from app.services.eastmoney_client import eastmoney_client
 
 logger = logging.getLogger(__name__)
+
+
+def _is_fatal_xtick_error(exc: Exception) -> bool:
+    if not isinstance(exc, XtickApiError):
+        return False
+    text = str(exc)
+    fatal_keywords = ("访问量超限", "请求权限", "无该接口请求权限")
+    return any(keyword in text for keyword in fatal_keywords)
+
+
+def _is_optional_sync_step(key: str) -> bool:
+    return key == "market_caps"
 
 
 def _classify_board(code: str, name: str) -> tuple[str, str, bool]:
@@ -46,11 +55,13 @@ def _is_limit_up(close: float, pre_close: float, code: str) -> bool:
     return pct >= 9.5
 
 
-async def sync_stock_list():
+async def sync_stock_list(raise_on_error: bool = False):
     """同步股票列表"""
     try:
         data = await xtick_client.get_stock_list("all")
     except (XtickApiError, Exception) as e:
+        if raise_on_error:
+            raise
         logger.error(f"同步股票列表失败: {e}")
         return 0
 
@@ -89,11 +100,13 @@ async def sync_stock_list():
     return len(rows)
 
 
-async def sync_daily_kline(trade_date: date):
+async def sync_daily_kline(trade_date: date, raise_on_error: bool = False):
     """同步全市场某日日K数据"""
     try:
         data = await xtick_client.get_all_daily_kline(trade_date)
     except (XtickApiError, Exception) as e:
+        if raise_on_error:
+            raise
         logger.error(f"同步 {trade_date} 日K失败: {e}")
         return 0
 
@@ -150,11 +163,13 @@ async def sync_daily_kline(trade_date: date):
     return len(rows)
 
 
-async def sync_auction_data(trade_date: date):
+async def sync_auction_data(trade_date: date, raise_on_error: bool = False):
     """同步全市场某日竞价数据(REST API)"""
     try:
         data = await xtick_client.get_all_history_auction(trade_date)
     except (XtickApiError, Exception) as e:
+        if raise_on_error:
+            raise
         logger.error(f"同步 {trade_date} 竞价失败: {e}")
         return 0
 
@@ -207,7 +222,7 @@ async def sync_auction_data(trade_date: date):
     return len(rows)
 
 
-async def sync_recent_klines(trade_date: date, days: int = 10):
+async def sync_recent_klines(trade_date: date, days: int = 10, raise_on_error: bool = False):
     """补齐历史日K, 跳过已有数据"""
     async with async_session() as db:
         result = await db.execute(
@@ -224,44 +239,58 @@ async def sync_recent_klines(trade_date: date, days: int = 10):
         if d in existing_dates:
             continue
         try:
-            count = await sync_daily_kline(d)
+            count = await sync_daily_kline(d, raise_on_error=raise_on_error)
             total += count
             await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"同步 {d} 日K失败: {e}")
+            if raise_on_error or _is_fatal_xtick_error(e):
+                raise
     return total
 
 
-async def cache_quant_data() -> int:
-    """同步流通市值到数据库, 每天调一次即可"""
+async def cache_quant_data(raise_on_error: bool = False) -> int:
+    """同步流通市值到数据库, 优先使用东方财富, 失败时用xtick"""
+    cap_map = {}
+
+    # 优先使用东方财富
     try:
-        quant_data = await xtick_client.get_quant_data("x025")
-        cap_map = {}
-        if isinstance(quant_data, dict) and "data" in quant_data:
-            qdata = quant_data["data"]
-            codes = qdata.get("code", [])
-            caps = qdata.get("x025", [])
-            for i, code in enumerate(codes):
-                if i < len(caps) and caps[i]:
-                    cap_map[code] = float(caps[i]) / 1e8
-        if not cap_map:
-            logger.warning("流通市值接口返回为空, 未写入数据库")
+        cap_map = await eastmoney_client.get_market_caps()
+    except Exception as e:
+        logger.warning(f"东方财富市值获取失败: {e}, 尝试 xtick")
+
+    # 东方财富失败时用 xtick
+    if not cap_map:
+        try:
+            quant_data = await xtick_client.get_quant_data("x025")
+            if isinstance(quant_data, dict) and "data" in quant_data:
+                qdata = quant_data["data"]
+                codes = qdata.get("code", [])
+                caps = qdata.get("x025", [])
+                for i, code in enumerate(codes):
+                    if i < len(caps) and caps[i]:
+                        cap_map[code] = float(caps[i]) / 1e8
+        except Exception as e:
+            if raise_on_error:
+                raise
+            logger.warning(f"xtick 市值获取失败: {e}")
             return 0
 
-        async with async_session() as db:
-            from sqlalchemy import update
-            for code, cap in cap_map.items():
-                await db.execute(
-                    update(Stock)
-                    .where(Stock.code == code)
-                    .values(circulating_market_cap=cap)
-                )
-            await db.commit()
-        logger.info(f"流通市值已同步到数据库: {len(cap_map)} 只")
-        return len(cap_map)
-    except Exception as e:
-        logger.warning(f"同步流通市值失败: {e}")
+    if not cap_map:
+        logger.warning("流通市值接口返回为空")
         return 0
+
+    async with async_session() as db:
+        from sqlalchemy import update
+        for code, cap in cap_map.items():
+            await db.execute(
+                update(Stock)
+                .where(Stock.code == code)
+                .values(circulating_market_cap=cap)
+            )
+        await db.commit()
+    logger.info(f"流通市值已同步到数据库: {len(cap_map)} 只")
+    return len(cap_map)
 
 
 async def ensure_market_cap_cache() -> int:
@@ -283,12 +312,41 @@ async def ensure_market_cap_cache() -> int:
 
 async def sync_all(trade_date: date):
     """同步数据: 股票列表 + 历史日K(不含当日) + 当日竞价 + 缓存市值"""
-    stock_count = await sync_stock_list()
-    history_kline_count = await sync_recent_klines(trade_date, days=12)
-    auction_count = await sync_auction_data(trade_date)
-    await cache_quant_data()
+    result = {
+        "success": True,
+        "stocks": 0,
+        "klines": 0,
+        "auctions": 0,
+        "market_caps": 0,
+        "errors": [],
+    }
+
+    steps = [
+        ("stocks", "股票列表", lambda: sync_stock_list(raise_on_error=True)),
+        ("klines", "历史日K", lambda: sync_recent_klines(trade_date, days=12, raise_on_error=True)),
+        ("auctions", "竞价", lambda: sync_auction_data(trade_date, raise_on_error=True)),
+        ("market_caps", "流通市值", lambda: cache_quant_data(raise_on_error=True)),
+    ]
+
+    for key, label, runner in steps:
+        try:
+            result[key] = await runner()
+        except Exception as e:
+            result["errors"].append(f"{label}: {e}")
+            logger.error(f"sync_all {label}失败: {e}")
+            if _is_optional_sync_step(key):
+                logger.warning(f"sync_all {label}失败已降级为警告，主同步结果保留")
+                continue
+
+            result["success"] = False
+            if _is_fatal_xtick_error(e):
+                break
+
     return {
-        "stocks": stock_count,
-        "klines": history_kline_count,
-        "auctions": auction_count,
+        "success": result["success"],
+        "stocks": result["stocks"],
+        "klines": result["klines"],
+        "auctions": result["auctions"],
+        "market_caps": result["market_caps"],
+        "errors": result["errors"],
     }

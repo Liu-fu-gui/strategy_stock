@@ -7,8 +7,6 @@ from typing import Optional
 
 from app.core.config import settings
 
-BASE = settings.XTICK_BASE_URL
-TOKEN = settings.XTICK_TOKEN
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +19,14 @@ class XtickClient:
 
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def base_url(self) -> str:
+        return settings.XTICK_BASE_URL.rstrip("/")
+
+    @property
+    def token(self) -> str:
+        return settings.XTICK_TOKEN
 
     async def close(self):
         await self.client.aclose()
@@ -58,16 +64,16 @@ class XtickClient:
     # ---------- 股票列表 ----------
     async def get_stock_list(self, symbol: str = "all") -> list[dict]:
         resp = await self._get_with_retry(
-            f"{BASE}/doc/stockinfo", {"symbol": symbol, "token": TOKEN}
+            f"{self.base_url}/doc/stockinfo", {"symbol": symbol, "token": self.token}
         )
         return self._check_response(resp.json())
 
     # ---------- 日K线 ----------
     async def get_daily_kline(self, code: str, start_date: date, end_date: date) -> list[dict]:
         resp = await self._get_with_retry(
-            f"{BASE}/doc/kline/market",
+            f"{self.base_url}/doc/kline/market",
             {"type": 1, "code": code, "period": "1d", "fq": "none",
-             "startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "token": TOKEN},
+             "startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "token": self.token},
         )
         return self._check_response(resp.json())
 
@@ -76,18 +82,18 @@ class XtickClient:
 
     # ---------- 竞价数据(实时) ----------
     async def get_realtime_auction(self, code: str = "all", option: Optional[str] = None) -> list[dict]:
-        params = {"type": 1, "code": code, "token": TOKEN}
+        params = {"type": 1, "code": code, "token": self.token}
         if option:
             params["option"] = option
-        resp = await self._get_with_retry(f"{BASE}/doc/bid/time", params)
+        resp = await self._get_with_retry(f"{self.base_url}/doc/bid/time", params)
         return self._check_response(resp.json())
 
     # ---------- 竞价数据(历史) ----------
     async def get_history_auction(self, code: str, start_date: date, end_date: date, seq: int = 0) -> list[dict]:
         resp = await self._get_with_retry(
-            f"{BASE}/doc/bid/history",
+            f"{self.base_url}/doc/bid/history",
             {"type": 1, "code": code, "seq": seq,
-             "startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "token": TOKEN},
+             "startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "token": self.token},
         )
         return self._check_response(resp.json())
 
@@ -97,19 +103,36 @@ class XtickClient:
     # ---------- 量化因子(含流通市值) ----------
     async def get_quant_data(self, fields: str = "x024,x025") -> dict:
         resp = await self._get_with_retry(
-            f"{BASE}/doc/quant/data",
-            {"type": 1, "field": fields, "token": TOKEN},
+            f"{self.base_url}/doc/quant/data",
+            {"type": 1, "field": fields, "token": self.token},
         )
         data = resp.json()
         if isinstance(data, dict) and data.get("code") == -1:
             raise XtickApiError(f"xtick API 错误: {data.get('message', '')}")
         return data
 
-    # ---------- 涨停板数据 ----------
-    async def get_hot_board(self, flag: int, trade_date: date) -> list[dict]:
+    # ---------- 实时Tick ----------
+    async def get_realtime_tick(self, code: str = "all") -> list[dict]:
         resp = await self._get_with_retry(
-            f"{BASE}/doc/hot/board",
-            {"type": 1, "flag": flag, "tradeDate": trade_date.isoformat(), "token": TOKEN},
+            f"{self.base_url}/doc/tick/time",
+            {"type": 1, "code": code, "token": self.token},
+        )
+        return self._check_response(resp.json())
+
+    # ---------- 历史Tick ----------
+    async def get_history_tick(self, code: str, start_date: date, end_date: date) -> list[dict]:
+        resp = await self._get_with_retry(
+            f"{self.base_url}/doc/tick/history",
+            {"type": 1, "code": code, "startDate": start_date.isoformat(),
+             "endDate": end_date.isoformat(), "token": self.token},
+        )
+        return self._check_response(resp.json())
+
+    # ---------- 竞价详情 ----------
+    async def get_auction_detail(self, code: str, trade_date: date) -> list[dict]:
+        resp = await self._get_with_retry(
+            f"{self.base_url}/doc/bid/detail",
+            {"type": 1, "code": code, "tradeDate": trade_date.isoformat(), "token": self.token},
         )
         return self._check_response(resp.json())
 

@@ -1,8 +1,6 @@
 """数据同步相关接口"""
-import asyncio
-from datetime import date
-
 from fastapi import APIRouter, BackgroundTasks
+from fastapi.responses import JSONResponse
 
 from app.schemas.stock import SyncRequest, SyncResponse
 from app.services.data_syncer import sync_stock_list, sync_daily_kline, sync_auction_data, sync_all
@@ -32,7 +30,8 @@ async def api_sync_auction(req: SyncRequest):
 @router.post("/sync/all", summary="同步全部数据", response_model=SyncResponse)
 async def api_sync_all(req: SyncRequest):
     result = await sync_all(req.trade_date)
-    return result
+    status_code = 200 if result["success"] else 503
+    return JSONResponse(status_code=status_code, content=result)
 
 
 @router.post("/sync/batch", summary="批量同步多天数据")
@@ -41,11 +40,8 @@ async def api_sync_batch(req: SyncRequest, days: int = 7):
     results = []
     for i in range(days):
         trade_date = req.trade_date - timedelta(days=i)
-        try:
-            result = await sync_all(trade_date)
-            results.append({"date": trade_date, "success": True, **result})
-        except Exception as e:
-            results.append({"date": trade_date, "success": False, "error": str(e)})
+        result = await sync_all(trade_date)
+        results.append({"date": trade_date, **result})
     return {"results": results}
 
 
@@ -99,3 +95,5 @@ async def api_ws_save():
 @router.get("/ws/status", summary="WebSocket接收状态")
 async def api_ws_status():
     return get_ws_status()
+
+

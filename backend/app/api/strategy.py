@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import select, desc, func, delete
 
 from app.core.database import async_session
-from app.models.stock import StrategyResult, StrategyTemplate
+from app.models.stock import StrategyResult, StrategyTemplate, DailyKline, Stock
 from app.schemas.stock import (
     StrategyRunRequest, StrategyResultOut, StrategyResultResponse, StrategyRunResponse,
 )
@@ -120,28 +120,72 @@ async def api_delete_template(template_id: int):
     return {"success": True}
 
 
-@router.get("/limitup", summary="获取当天涨停池数据")
+def _board_label_from_code(code: str) -> str:
+    if code.startswith("688"):
+        return "科创板"
+    if code.startswith("3"):
+        return "创业板"
+    if code.startswith(("4", "8")):
+        return "北交所"
+    return "主板"
+
+
+@router.get("/limitup", summary="获取当天涨停池数据(本地数据库)")
 async def api_get_limitup(_trade_date: date | None = Query(default=None, alias="trade_date")):
-    today = date.today()
-    items = await eastmoney_client.get_limit_up_pool(today)
-    return {
-        "date": today,
-        "count": len(items),
-        "source": "eastmoney",
-        "data": [
-            {
-                "code": item.get("c", ""),
-                "name": item.get("n", ""),
-                "board": item.get("hybk", "") or "",
-                "close": round(float(item.get("p", 0) or 0) / 1000, 3),
-                "change_pct": float(item.get("zdp", 0) or 0),
-                "limit_up_time": item.get("fbt"),
-                "last_limit_up_time": item.get("lbt"),
-                "open_count": int(item.get("zbc", 0) or 0),
-                "limit_up_count": int(item.get("lbc", 0) or 0),
-                "amount": float(item.get("amount", 0) or 0),
-                "sealed_fund": float(item.get("fund", 0) or 0),
-            }
-            for item in items
-        ],
-    }
+    requested_date = _trade_date or date.today()
+
+    # 当天涨停池：优先东方财富（更实时）；失败再降级查本地库
+    if requested_date == date.today():
+        try:
+            items = await eastmoney_client.get_limit_up_pool(requested_date)
+            data = [
+                {
+                    "code": item.get("c", ""),
+                    "name": item.get("n", ""),
+                    "board": _board_label_from_code(item.get("c", "") or ""),
+                    "close": round(float(item.get("p", 0) or 0) / 1000, 3),
+                    "change_pct": float(item.get("zdp", 0) or 0),
+                    "limit_up_time": item.get("fbt"),
+                    "last_limit_up_time": item.get("lbt"),
+                    "open_count": int(item.get("zbc", 0) or 0),
+                    "limit_up_count": int(item.get("lbc", 0) or 0),
+                    "amount": float(item.get("amount", 0) or 0),
+                    "sealed_fund": float(item.get("fund", 0) or 0),
+                    "raw": item,
+                }
+                for item in items
+                if isinstance(item, dict)
+            ]
+            return {"date": requested_date, "count": len(data), "source": "eastmoney", "data": data}
+        except Exception as e:
+            # 不中断，走本地库兜底
+            pass
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(
+                DailyKline.code,
+                Stock.name,
+                DailyKline.close,
+                DailyKline.amount,
+                DailyKline.change_pct,
+            )
+            .join(Stock, Stock.code == DailyKline.code)
+            .where(DailyKline.trade_date == requested_date, DailyKline.is_limit_up.is_(True))
+            .order_by(desc(DailyKline.amount))
+        )
+        rows = result.all()
+
+    data = [
+        {
+            "code": code,
+            "name": name,
+            "board": _board_label_from_code(code),
+            "close": float(close) if close is not None else None,
+            "amount": float(amount) if amount is not None else None,
+            "change_pct": float(change_pct) if change_pct is not None else None,
+        }
+        for code, name, close, amount, change_pct in rows
+    ]
+    return {"date": requested_date, "count": len(data), "source": "db", "data": data}
+

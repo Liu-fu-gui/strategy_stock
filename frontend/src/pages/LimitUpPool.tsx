@@ -8,15 +8,15 @@ import { getLimitUpPool } from '../services/api';
 interface LimitUpItem {
   code: string;
   name: string;
-  board: string;
-  close?: number;
-  amount?: number;
+  board?: string | null;
+  close?: number | null;
+  amount?: number | null;
+  change_pct?: number | null;
   limit_up_time?: string | number | null;
   last_limit_up_time?: string | number | null;
-  open_count?: number;
-  limit_up_count?: number;
-  sealed_fund?: number;
-  change_pct?: number;
+  open_count?: number | null;
+  limit_up_count?: number | null;
+  sealed_fund?: number | null;
 }
 
 const formatNumber = (value: unknown, digits = 2) => {
@@ -38,19 +38,22 @@ const formatLimitUpTime = (value: unknown) => {
 const LimitUpPool: React.FC = () => {
   const [data, setData] = useState<LimitUpItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const dateStr = dayjs().format('YYYY-MM-DD');
+  const [serverDate, setServerDate] = useState<string>(dayjs().format('YYYY-MM-DD'));
 
   const handleLoad = async () => {
     setLoading(true);
     try {
       const res = await getLimitUpPool();
       setData(res.data.data || []);
-      if (res.data.count > 0) {
+      if (res.data.date) {
+        setServerDate(String(res.data.date));
+      }
+      if ((res.data.count || 0) > 0) {
         message.success(`加载完成: ${res.data.count} 只涨停`);
       } else {
         message.warning('当天涨停池暂无数据');
       }
-    } catch (e: any) {
+    } catch {
       message.error('加载当天涨停池失败');
     } finally {
       setLoading(false);
@@ -98,7 +101,7 @@ const LimitUpPool: React.FC = () => {
 
   return (
     <Card
-      title={`涨停池 (${dateStr})`}
+      title={`涨停池 (${serverDate})`}
       extra={
         <Space>
           <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={handleLoad}>
@@ -120,3 +123,4 @@ const LimitUpPool: React.FC = () => {
 };
 
 export default LimitUpPool;
+

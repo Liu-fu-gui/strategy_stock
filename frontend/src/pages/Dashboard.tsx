@@ -15,7 +15,7 @@ import KlineChart from '../components/KlineChart';
 const { TextArea } = Input;
 const { Text } = Typography;
 
-const DEFAULT_STRATEGY = '';
+const DEFAULT_STRATEGY = '近5日有涨停，近3日回调超过5%，竞价抢筹，竞价金额大于1000万，流通市值大于50亿小于300亿，非科创，非创业板，非北交所，非ST';
 
 interface ConditionStep {
   label: string;
@@ -32,6 +32,15 @@ interface ResultItem {
   auction_change_pct: number;
   trend: number;
   circulating_market_cap: number | null;
+}
+
+interface SyncResult {
+  success: boolean;
+  stocks: number;
+  klines: number;
+  auctions: number;
+  market_caps?: number;
+  errors?: string[];
 }
 
 const Dashboard: React.FC = () => {
@@ -85,9 +94,22 @@ const Dashboard: React.FC = () => {
     setSyncing(true);
     try {
       const res = await syncAll(dateStr);
-      message.success(`同步完成: 股票${res.data.stocks}, K线${res.data.klines}, 竞价${res.data.auctions}`);
+      const data: SyncResult = res.data;
+      const summary = `股票${data.stocks}, K线${data.klines}, 竞价${data.auctions}, 市值${data.market_caps || 0}`;
+      if (data.errors?.length) {
+        message.warning(`同步部分完成: ${summary}；${data.errors.join('；')}`);
+      } else {
+        message.success(`同步完成: ${summary}`);
+      }
     } catch (e: any) {
-      message.error('同步失败: ' + (e.response?.data?.detail || e.message));
+      const data: SyncResult | undefined = e.response?.data;
+      if (data) {
+        const summary = `股票${data.stocks}, K线${data.klines}, 竞价${data.auctions}, 市值${data.market_caps || 0}`;
+        const errorText = data.errors?.join('；') || e.message;
+        message.error(`同步失败: ${summary}；${errorText}`);
+      } else {
+        message.error('同步失败: ' + (e.response?.data?.detail || e.message));
+      }
     } finally {
       setSyncing(false);
     }

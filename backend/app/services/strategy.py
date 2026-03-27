@@ -1,19 +1,16 @@
 """策略引擎 - 支持自定义条件的分步筛选"""
-import json
 import logging
 import re
 from datetime import date, timedelta
-from decimal import Decimal
-from typing import Optional
+from types import SimpleNamespace
 
-from sqlalchemy import select, and_, func, desc, delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, delete
 
 from app.core.database import async_session
-from app.core.redis import redis_client
 from app.models.stock import Stock, DailyKline, AuctionData, StrategyResult
 from app.services.data_syncer import ensure_market_cap_cache
 from app.services.xtick_client import xtick_client
+from app.services import ws_receiver
 
 logger = logging.getLogger(__name__)
 
@@ -166,10 +163,44 @@ async def run_strategy_with_steps(
         candidates = set(all_stocks.keys())
 
         # 2) 预加载竞价数据
-        auction_result = await db.execute(
-            select(AuctionData).where(AuctionData.trade_date == trade_date)
-        )
-        auction_map = {a.code: a for a in auction_result.scalars().all()}
+        # 今天优先使用实时数据(WS缓存优先，其次xtick实时接口)，避免“今天要实时”却读到落库旧数据
+        auction_map: dict[str, object] = {}
+        if trade_date == date.today():
+            try:
+                realtime_rows: list[dict] = []
+                if isinstance(ws_receiver.auction_cache, dict) and ws_receiver.auction_cache:
+                    realtime_rows = list(ws_receiver.auction_cache.values())
+                    logger.info(f"使用WS实时竞价缓存: {len(realtime_rows)} 只")
+                else:
+                    realtime_rows = await xtick_client.get_realtime_auction("all")
+                    logger.info(f"使用xtick实时竞价接口: {len(realtime_rows)} 条")
+
+                for item in realtime_rows:
+                    if not isinstance(item, dict):
+                        continue
+                    code = item.get("code") or ""
+                    if not code:
+                        continue
+                    auction_map[code] = SimpleNamespace(
+                        code=code,
+                        trade_date=trade_date,
+                        price=item.get("price") or 0,
+                        pre_close=item.get("close") or 0,
+                        auction_change_pct=item.get("jjzf") or 0,
+                        auction_volume=item.get("jjl") or 0,
+                        auction_amount=item.get("jje") or 0,
+                        unmatched_volume=item.get("nol"),
+                        unmatched_amount=item.get("noe"),
+                        trend=item.get("trend"),
+                    )
+            except Exception as e:
+                logger.warning(f"实时竞价获取失败，回退使用数据库竞价数据: {e}")
+
+        if not auction_map:
+            auction_result = await db.execute(
+                select(AuctionData).where(AuctionData.trade_date == trade_date)
+            )
+            auction_map = {a.code: a for a in auction_result.scalars().all()}
 
         # 3) 预加载近期K线数据 (近10个自然日覆盖5个交易日)
         kline_start = trade_date - timedelta(days=15)
@@ -203,14 +234,13 @@ async def run_strategy_with_steps(
         price_map: dict[str, dict] = {}
         for code, auction in auction_map.items():
             price_map[code] = {
-                "price": float(auction.price) if auction.price else 0,
-                "pre_close": float(auction.pre_close) if auction.pre_close else 0,
+                "price": float(getattr(auction, "price", 0) or 0),
+                "pre_close": float(getattr(auction, "pre_close", 0) or 0),
             }
 
         # ========== 逐条件筛选 ==========
         for cond in conditions:
             ctype = cond["type"]
-            before_count = len(candidates)
 
             if ctype == "limit_up_in_days":
                 days = cond["days"]
@@ -243,7 +273,7 @@ async def run_strategy_with_steps(
                 passed = set()
                 for code in candidates:
                     auction = auction_map.get(code)
-                    if auction and auction.trend == 1:
+                    if auction and getattr(auction, "trend", None) == 1:
                         passed.add(code)
                 candidates = passed
 
@@ -252,7 +282,7 @@ async def run_strategy_with_steps(
                 passed = set()
                 for code in candidates:
                     auction = auction_map.get(code)
-                    if auction and float(auction.auction_amount) >= min_amount:
+                    if auction and float(getattr(auction, "auction_amount", 0) or 0) >= min_amount:
                         passed.add(code)
                 candidates = passed
 
@@ -304,8 +334,8 @@ async def run_strategy_with_steps(
             current_price = price_info.get("price", 0)
             pre_close = price_info.get("pre_close", 0)
             if current_price == 0 and auction:
-                current_price = float(auction.price)
-                pre_close = float(auction.pre_close)
+                current_price = float(getattr(auction, "price", 0) or 0)
+                pre_close = float(getattr(auction, "pre_close", 0) or 0)
             change_pct = 0.0
             if pre_close > 0:
                 change_pct = round((current_price - pre_close) / pre_close * 100, 2)
@@ -325,9 +355,9 @@ async def run_strategy_with_steps(
                 "change_pct": change_pct,
                 "current_price": current_price,
                 "limit_up_dates": limit_up_dates,
-                "auction_amount": float(auction.auction_amount) if auction else 0,
-                "auction_change_pct": float(auction.auction_change_pct) if auction else 0,
-                "trend": auction.trend if auction else 0,
+                "auction_amount": float(getattr(auction, "auction_amount", 0) or 0) if auction else 0,
+                "auction_change_pct": float(getattr(auction, "auction_change_pct", 0) or 0) if auction else 0,
+                "trend": getattr(auction, "trend", 0) if auction else 0,
                 "circulating_market_cap": round(cap, 2) if cap else None,
             })
 
