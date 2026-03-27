@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:18.3
+    container_name: pg_stock
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: stock
+      POSTGRES_PASSWORD: stock123456
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres:/var/lib/postgresql
+
+  redis:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/redis:6.2.20-alpine
+    container_name: redis_stock
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - redis123456
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./redis:/data

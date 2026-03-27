@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StockOut(BaseModel):
@@ -70,9 +70,12 @@ class SyncRequest(BaseModel):
 
 
 class SyncResponse(BaseModel):
+    success: bool = True
     stocks: int = 0
     klines: int = 0
     auctions: int = 0
+    market_caps: int = 0
+    errors: list[str] = Field(default_factory=list)
 
 
 class StrategyRunRequest(BaseModel):

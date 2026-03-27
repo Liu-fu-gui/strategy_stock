@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Form, Input, Button, message } from 'antd';
 import { getEnvSettings, updateEnvSettings } from '../services/api';
 
@@ -7,11 +7,7 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getEnvSettings();
@@ -21,14 +17,18 @@ const Settings: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [form]);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       const values = await form.validateFields();
-      await updateEnvSettings(values);
-      message.success('配置已保存，请重启后端服务生效');
+      const res = await updateEnvSettings(values);
+      message.success(res.data?.message || '配置已保存');
     } catch (e: any) {
       message.error('保存失败');
     } finally {
@@ -50,6 +50,9 @@ const Settings: React.FC = () => {
         </Form.Item>
         <Form.Item label="Xtick Token" name="xtick_token" rules={[{ required: true }]}>
           <Input placeholder="your_token_here" />
+        </Form.Item>
+        <Form.Item label="Xtick WS Token" name="xtick_ws_token" rules={[{ required: true }]}>
+          <Input placeholder="your_ws_token_here" />
         </Form.Item>
         <Form.Item>
           <Button type="primary" onClick={handleSave} loading={saving}>

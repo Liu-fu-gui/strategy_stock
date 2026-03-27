@@ -1,5 +1,4 @@
 """定时任务调度"""
-import asyncio
 import logging
 from datetime import date
 

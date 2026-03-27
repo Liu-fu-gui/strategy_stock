@@ -39,7 +39,7 @@ def _decompress(data: bytes) -> dict:
 def _build_ws_url() -> str:
     """构建 WebSocket 连接 URL"""
     user_info = json.dumps({
-        "token": settings.XTICK_TOKEN,
+        "token": settings.XTICK_WS_TOKEN,
         "authCodes": ["bid.1"],
     })
     user_encoded = urllib.parse.quote(user_info)

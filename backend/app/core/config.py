@@ -11,7 +11,8 @@ class Settings(BaseSettings):
 
     # xtick API
     XTICK_BASE_URL: str = "http://api.xtick.top"
-    XTICK_TOKEN: str = "0d8aa771dd0a0e33624e1546d13c3eb6"
+    XTICK_TOKEN: str = "0d8aa771dd0a0e33624e1546d13c3eb6"  # HTTP API token
+    XTICK_WS_TOKEN: str = "eb4c4ba85f26a26d3dbedcf85535fce1"  # WebSocket token
 
     # 应用
     APP_TITLE: str = "策略选股系统"
