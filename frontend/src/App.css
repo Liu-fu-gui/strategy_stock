@@ -1,0 +1,12 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* 涨停行高亮 */
+.row-limit-up {
+  background-color: #fff1f0 !important;
+}
+.row-limit-up:hover > td {
+  background-color: #ffccc7 !important;
+}
